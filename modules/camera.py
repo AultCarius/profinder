@@ -2,7 +2,7 @@ import cv2
 import threading
 
 class CameraStream:
-    def __init__(self, index=0, width=1280, height=720):
+    def __init__(self, index=1, width=1280, height=720):
         self.cap = cv2.VideoCapture(index + cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)

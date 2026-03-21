@@ -1,60 +1,63 @@
 import cv2
-import time  # 引入计时模块
+import time
+import os
 
-from modules.vision import detect_persons, crop_person, recognize_occupation
 
-# ========== 1. 初始化摄像头并计时 ==========
-start_time = time.time()
-cap = cv2.VideoCapture(1 + cv2.CAP_DSHOW)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
-camera_init_time = time.time() - start_time
-print(f"✅ 摄像头初始化耗时：{camera_init_time:.4f} 秒")
+def capture_photo(camera_id, save_path):
+    """
+    打开指定摄像头并拍摄一张照片
+    :param camera_id: 摄像头编号（0/1）
+    :param save_path: 照片保存路径
+    """
+    # 初始化摄像头（Windows 加 CAP_DSHOW 避免黑屏/卡顿）
+    cap = cv2.VideoCapture(camera_id + cv2.CAP_DSHOW if os.name == 'nt' else camera_id)
 
-# ========== 2. 读取摄像头画面并计时 ==========
-start_time = time.time()
-ret, frame = cap.read()
-cap.release()
-frame_read_time = time.time() - start_time
-print(f"✅ 摄像头读取单帧画面耗时：{frame_read_time:.4f} 秒")
+    # 设置摄像头分辨率（可选，根据需要调整）
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-if not ret:
-    print("❌ 摄像头读取失败")
-else:
-    # ========== 3. 人物检测并计时 ==========
-    start_time = time.time()
-    boxes = detect_persons(frame)
-    detect_time = time.time() - start_time
-    print(f"✅ 人物检测耗时：{detect_time:.4f} 秒，共检测到 {len(boxes)} 个人")
+    # 给摄像头一点启动时间（避免第一张图模糊/黑屏）
+    time.sleep(1)
 
-    # ========== 4. 逐个人物处理（裁剪+职业识别）并计时 ==========
-    total_crop_time = 0.0
-    total_recognize_time = 0.0
+    try:
+        # 读取一帧画面
+        ret, frame = cap.read()
 
-    for i, box in enumerate(boxes):
-        # 4.1 人像裁剪计时
-        crop_start = time.time()
-        crop = crop_person(frame, box)
-        crop_time = time.time() - crop_start
-        total_crop_time += crop_time
+        if not ret:
+            print(f"❌ 摄像头 {camera_id} 读取画面失败！")
+            return False
 
-        # 4.2 职业识别计时
-        recognize_start = time.time()
-        occupation = recognize_occupation(crop)
-        recognize_time = time.time() - recognize_start
-        total_recognize_time += recognize_time
+        # 保存照片
+        cv2.imwrite(save_path, frame)
+        print(f"✅ 摄像头 {camera_id} 拍摄成功！照片已保存至：{save_path}")
+        return True
 
-        # 打印单个人物的耗时和结果
-        print(
-            f"  🧑 人物 {i + 1}：裁剪耗时 {crop_time:.4f} 秒 | 职业识别耗时 {recognize_time:.4f} 秒 | 识别结果：{occupation}")
+    except Exception as e:
+        print(f"❌ 摄像头 {camera_id} 拍摄出错：{e}")
+        return False
 
-    # 打印累计耗时
-    print(f"\n📊 累计统计：")
-    print(f"   - 所有人物裁剪总耗时：{total_crop_time:.4f} 秒（平均 {total_crop_time / max(len(boxes), 1):.4f} 秒/人）")
-    print(
-        f"   - 所有人物职业识别总耗时：{total_recognize_time:.4f} 秒（平均 {total_recognize_time / max(len(boxes), 1):.4f} 秒/人）")
+    finally:
+        # 无论是否成功，都要释放摄像头
+        cap.release()
+        cv2.destroyAllWindows()
 
-# ========== 5. 总耗时统计 ==========
-total_program_time = camera_init_time + frame_read_time + (
-    detect_time if 'detect_time' in locals() else 0) + total_crop_time + total_recognize_time
-print(f"\n⏱️  程序总耗时：{total_program_time:.4f} 秒")
+
+if __name__ == "__main__":
+    # 创建保存照片的文件夹（避免路径不存在）
+    save_dir = "camera_photos"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # 分别拍摄摄像头 0 和 1
+    capture_photo(
+        camera_id=0,
+        save_path=os.path.join(save_dir, "camera_0_photo.jpg")
+    )
+
+    # 间隔1秒，避免摄像头占用冲突
+    time.sleep(1)
+
+    capture_photo(
+        camera_id=1,
+        save_path=os.path.join(save_dir, "camera_1_photo.jpg")
+    )

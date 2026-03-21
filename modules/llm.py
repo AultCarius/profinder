@@ -1,9 +1,11 @@
 """
 modules/llm.py
 
-两阶段问答 + 分层回退：
-  1. 用状态表 JSON + 用户问题组装 Prompt，调用文字 LLM 获取回答
-  2. 若回答含"需要仔细看"，携带当前帧调用视觉 LLM 重试
+三种问答模式，由 config.LLM_MODE 控制：
+
+  "vision_only"  每次都把当前帧发给 VL 模型，信息最完整
+  "text_first"   文字 LLM 优先，回答含"需要仔细看"时回退 VL
+  "text_only"    永远只用文字 LLM + 状态表
 """
 
 import base64
@@ -19,58 +21,86 @@ _client = OpenAI(
     base_url=config.SILICONFLOW_BASE_URL,
 )
 
-# ── 系统 Prompt ──────────────────────────────────────────────────────────────
-_SYSTEM_PROMPT = """你是一个帮助认知障碍用户识别周围职业人员的语音助手。
-当前画面中检测到的人员信息已以 JSON 列表提供给你。
-请根据这些信息用简短口语化的中文回答用户的问题。
+# ── Prompt ────────────────────────────────────────────────────────────────────
+
+# vision_only / 回退时用
+_VISION_SYSTEM = """你是一个帮助认知障碍用户了解周围环境的语音助手。
+你能直接看到当前摄像头画面，请根据画面内容用简短口语化中文回答用户问题。
 要求：
-- 回答不超过 60 字
-- 不使用 Markdown 符号、括号、引号
-- 不使用数字编号列表
-- 若 JSON 列表为空或信息不足以回答，输出"需要仔细看"，不得猜测
+- 回答不超过 80 字
+- 不使用 Markdown 符号、括号、引号、数字列表
+- 描述尽量具体（外貌、服装、位置、行为等）
+- 若画面中无相关信息，直接说"画面里看不到"
 """
 
-_FALLBACK_PROMPT = """你是一个帮助认知障碍用户识别周围职业人员的语音助手。
-请观察图片中所有人物，并根据用户问题给出口语化中文回答。
+# text_first / text_only 用
+_TEXT_SYSTEM = """你是一个帮助认知障碍用户识别周围职业人员的语音助手。
+当前画面中检测到的人员信息已以 JSON 列表提供。
+请根据这些信息用简短口语化中文回答用户问题。
 要求：
 - 回答不超过 60 字
-- 不使用 Markdown 符号、括号、引号
-- 不使用数字编号列表
+- 不使用 Markdown 符号、括号、引号、数字列表
+- 若 JSON 列表为空或信息不足以准确回答，输出"需要仔细看"，绝对不要猜测
 """
 
 
-# ── 工具函数 ─────────────────────────────────────────────────────────────────
+# ── 工具 ──────────────────────────────────────────────────────────────────────
 def _frame_to_base64(frame) -> str:
-    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return base64.b64encode(buf).decode('utf-8')
 
 
-def _state_to_text(state_table: list) -> str:
-    """把状态表转成人类可读的简短描述，同时保留 JSON 原文给 LLM。"""
+def _state_to_json(state_table: list) -> str:
     if not state_table:
         return "[]"
-    clean = [
-        {"位置": e["position"], "职业": e["occupation"]}
-        for e in state_table
-    ]
-    return json.dumps(clean, ensure_ascii=False)
+    return json.dumps(
+        [{"位置": e["position"], "职业": e["occupation"]} for e in state_table],
+        ensure_ascii=False,
+    )
 
 
-# ── 第一阶段：文字 LLM ────────────────────────────────────────────────────────
-def ask_text_llm(user_question: str, state_table: list) -> str:
-    """
-    用状态表 + 用户问题调用文字 LLM。
-    返回回答字符串；失败时返回空字符串。
-    """
-    state_json = _state_to_text(state_table)
+# ── 核心调用 ──────────────────────────────────────────────────────────────────
+def _call_vision(user_question: str, frame, extra_context: str = "") -> str:
+    """把当前帧 + 问题发给 VL 模型。"""
+    b64 = _frame_to_base64(frame)
+    user_content = []
+
+    # 把状态表作为补充文字上下文（VL 模型也能利用）
+    if extra_context:
+        user_content.append({"type": "text", "text": f"[当前检测到的人员] {extra_context}\n"})
+
+    user_content.append({
+        "type": "image_url",
+        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+    })
+    user_content.append({"type": "text", "text": user_question})
+
+    try:
+        resp = _client.chat.completions.create(
+            model=config.VISION_MODEL,
+            max_tokens=150,
+            messages=[
+                {"role": "system", "content": _VISION_SYSTEM},
+                {"role": "user",   "content": user_content},
+            ],
+            timeout=config.LLM_TIMEOUT,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[LLM-vision] 调用失败：{e}")
+        return ""
+
+
+def _call_text(user_question: str, state_table: list) -> str:
+    """只用状态表回答，不发图片。"""
+    state_json   = _state_to_json(state_table)
     user_content = f"当前画面人员：{state_json}\n用户问题：{user_question}"
-
     try:
         resp = _client.chat.completions.create(
             model=config.CHAT_MODEL,
             max_tokens=120,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _TEXT_SYSTEM},
                 {"role": "user",   "content": user_content},
             ],
             timeout=config.LLM_TIMEOUT,
@@ -81,67 +111,39 @@ def ask_text_llm(user_question: str, state_table: list) -> str:
         return ""
 
 
-# ── 第二阶段：视觉 LLM 回退 ───────────────────────────────────────────────────
-def ask_vision_llm(user_question: str, frame) -> str:
-    """
-    携带当前摄像头帧调用视觉 LLM。
-    返回回答字符串；失败时返回空字符串。
-    """
-    b64 = _frame_to_base64(frame)
-
-    try:
-        resp = _client.chat.completions.create(
-            model=config.VISION_MODEL,
-            max_tokens=120,
-            messages=[
-                {"role": "system", "content": _FALLBACK_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                        },
-                        {"type": "text", "text": user_question},
-                    ],
-                },
-            ],
-            timeout=config.LLM_TIMEOUT,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"[LLM-vision] 调用失败：{e}")
-        return ""
-
-
-# ── 主入口：分层问答 ──────────────────────────────────────────────────────────
+# ── 主入口 ────────────────────────────────────────────────────────────────────
 def answer_question(user_question: str, state_table: list, current_frame) -> str:
     """
-    完整问答流程：
-      1. 文字 LLM 优先
-      2. 若回答含"需要仔细看" → 视觉 LLM 回退
-      3. 两次都失败 → 返回兜底提示
+    根据 config.LLM_MODE 选择问答策略：
 
-    参数
-    ----
-    user_question  : ASR 转写的用户问题
-    state_table    : vision.get_state_table() 返回的当前状态列表
-    current_frame  : camera.get_frame() 返回的当前帧（BGR ndarray）
+    vision_only  → 直接 VL，帧 + 状态表 JSON 都传入
+    text_first   → 文字 LLM 优先，"需要仔细看" 时回退 VL
+    text_only    → 纯文字 LLM
     """
-    print(f"[LLM] 收到问题：{user_question}")
+    mode = getattr(config, "LLM_MODE", "vision_only")
+    print(f"[LLM] 模式={mode}  问题：{user_question}")
 
-    # 第一阶段
-    answer = ask_text_llm(user_question, state_table)
-    print(f"[LLM-text] 回答：{answer}")
+    # ── vision_only ────────────────────────────────────────────────────────
+    if mode == "vision_only":
+        answer = _call_vision(user_question, current_frame,
+                              extra_context=_state_to_json(state_table))
 
-    # 触发回退
-    if not answer or "需要仔细看" in answer:
-        print("[LLM] 触发视觉回退...")
-        answer = ask_vision_llm(user_question, current_frame)
-        print(f"[LLM-vision] 回答：{answer}")
+    # ── text_only ──────────────────────────────────────────────────────────
+    elif mode == "text_only":
+        answer = _call_text(user_question, state_table)
 
-    # 最终兜底
+    # ── text_first（原两阶段逻辑）─────────────────────────────────────────
+    else:
+        answer = _call_text(user_question, state_table)
+        print(f"[LLM-text] 回答：{answer}")
+        if not answer or "需要仔细看" in answer:
+            print("[LLM] 触发视觉回退...")
+            answer = _call_vision(user_question, current_frame,
+                                  extra_context=_state_to_json(state_table))
+            print(f"[LLM-vision] 回答：{answer}")
+
+    print(f"[LLM] 最终回答：{answer}")
+
     if not answer:
-        answer = "抱歉，我现在无法判断，请稍后再问。"
-
+        return "抱歉，我现在无法判断，请稍后再问。"
     return answer

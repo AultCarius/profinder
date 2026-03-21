@@ -13,8 +13,14 @@ CHAT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 ASR_TIMEOUT = 15  # 单次 ASR 请求超时秒数
 
+# ── LLM 问答模式 ────────────────────────────────────────────────────────────
+# "vision_only" : 每次都把当前帧发给 VL 模型（推荐，信息最完整）
+# "text_first"  : 文字 LLM 优先，回答含"需要仔细看"时才回退 VL（省钱省时）
+# "text_only"   : 永远只用文字 LLM + 状态表（最快，但无法回答外观类问题）
+LLM_MODE = "vision_only"
+
 # 摄像头编号（通常是 0）
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 FRAME_WIDTH = 1024
 FRAME_HEIGHT = 768
 

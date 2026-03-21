@@ -2,255 +2,509 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <title>职业识别辅助系统</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Profinder — 职业识别辅助系统</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      background: #1a1a1a;
-      color: #f0f0f0;
-      font-family: "Microsoft YaHei", sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 20px;
-      gap: 14px;
+    :root {
+      --bg:       #0d0f12;
+      --surface:  #151820;
+      --surface2: #1c2030;
+      --border:   #ffffff0f;
+      --border2:  #ffffff1a;
+      --text:     #e8eaf0;
+      --muted:    #606880;
+      --accent:   #4f9eff;
+      --accent2:  #2ecc8e;
+      --user-bg:  #1a2d4a;
+      --user-txt: #7ec8ff;
+      --ai-bg:    #162a20;
+      --ai-txt:   #7be0a8;
+      --danger:   #ff5555;
+      --mono:     'DM Mono', monospace;
+      --sans:     'Noto Sans SC', sans-serif;
     }
 
-    h1 { font-size: 20px; font-weight: 500; letter-spacing: 2px; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* 摄像头画面 */
-    #video-wrap {
-      width: 100%;
-      max-width: 900px;
-      border-radius: 8px;
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-weight: 300;
       overflow: hidden;
-      background: #000;
     }
-    #video-wrap img { width: 100%; display: block; }
 
-    /* 通用面板 */
-    .panel {
-      width: 100%;
-      max-width: 900px;
-      background: #242424;
-      border-radius: 8px;
-      padding: 12px 16px;
-    }
-    .panel-header {
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 8px;
+    /* ── 顶部标题栏 ── */
+    header {
+      height: 48px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      flex-shrink: 0;
     }
 
-    /* ASR 面板 */
-    #mic-dot {
+    .logo-dot {
       width: 8px; height: 8px;
       border-radius: 50%;
-      background: #444;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    header h1 {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    .header-tag {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: .06em;
+    }
+
+    /* ── 主体布局：左右双栏 ── */
+    .layout {
+      display: flex;
+      height: calc(100vh - 48px);
+    }
+
+    /* ── 左侧：摄像头 ── */
+    .left-pane {
+      flex: 1 1 60%;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    .pane-header {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
-      transition: background .2s;
     }
-    #mic-dot.active { background: #e74c3c; animation: pulse .8s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-    #asr-list {
-      font-size: 15px;
-      line-height: 1.6;
-      max-height: 80px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
+    .pane-title {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: .1em;
+      text-transform: uppercase;
     }
-    .asr-item { color: #ccc; }
-    .asr-item.latest { color: #7ecfff; }
 
-    /* 对话面板 */
-    #chat-list {
-      max-height: 220px;
-      overflow-y: auto;
+    .status-pill {
+      margin-left: auto;
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s, box-shadow .3s;
+    }
+    .status-dot.live {
+      background: var(--accent2);
+      box-shadow: 0 0 6px var(--accent2);
+    }
+    .status-dot.speaking {
+      background: var(--danger);
+      animation: blink .6s ease-in-out infinite;
+    }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    .video-wrap {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      background: #000;
+    }
+    .video-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    /* 视频下方 ASR 条 */
+    .asr-bar {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
       gap: 10px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      overflow: hidden;
     }
 
-    .chat-bubble {
-      max-width: 80%;
-      padding: 8px 12px;
-      border-radius: 8px;
-      font-size: 15px;
-      line-height: 1.5;
-      animation: fadein .3s ease;
+    .mic-icon {
+      flex-shrink: 0;
+      width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
     }
-    @keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+    .mic-icon svg { width: 14px; height: 14px; fill: var(--muted); transition: fill .2s; }
+    .mic-icon.active svg { fill: var(--danger); filter: drop-shadow(0 0 4px var(--danger)); }
 
-    /* 用户气泡：右对齐，蓝色 */
-    .chat-bubble.user {
-      align-self: flex-end;
-      background: #1a3a5c;
-      color: #a8d8ff;
+    #asr-text {
+      font-size: 13px;
+      color: var(--muted);
+      font-family: var(--mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+      transition: color .3s;
     }
-    /* 助手气泡：左对齐，深绿 */
-    .chat-bubble.assistant {
-      align-self: flex-start;
-      background: #1a3a28;
-      color: #a8e0c0;
+    #asr-text.active { color: var(--user-txt); }
+
+    /* ── 右侧：对话 ── */
+    .right-pane {
+      flex: 0 0 380px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
     }
-    /* 思考中占位 */
-    .chat-bubble.thinking {
-      align-self: flex-start;
-      background: #2a2a2a;
-      color: #666;
+
+    /* 对话列表 */
+    #chat-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border2) transparent;
+    }
+    #chat-list::-webkit-scrollbar { width: 4px; }
+    #chat-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+    .bubble {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      animation: rise .25s ease both;
+    }
+    @keyframes rise { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+    .bubble.user  { align-items: flex-end; }
+    .bubble.ai    { align-items: flex-start; }
+
+    .bubble-role {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: .08em;
+      padding: 0 4px;
+    }
+
+    .bubble-body {
+      max-width: 92%;
+      padding: 9px 13px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .bubble.user .bubble-body {
+      background: var(--user-bg);
+      color: var(--user-txt);
+      border-radius: 12px 12px 3px 12px;
+      border: 1px solid #4f9eff22;
+    }
+    .bubble.ai .bubble-body {
+      background: var(--ai-bg);
+      color: var(--ai-txt);
+      border-radius: 12px 12px 12px 3px;
+      border: 1px solid #2ecc8e22;
+    }
+    .bubble.thinking .bubble-body {
+      background: var(--surface2);
+      color: var(--muted);
+      border: 1px solid var(--border);
       font-style: italic;
     }
-    .chat-bubble .role-tag {
-      font-size: 11px;
-      margin-bottom: 3px;
-      opacity: .6;
-    }
 
-    /* 状态栏 */
-    #status-bar {
-      font-size: 12px;
-      color: #444;
-      align-self: flex-start;
-      max-width: 900px;
-      width: 100%;
+    /* 打字动画 */
+    .typing-dots span {
+      display: inline-block;
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin: 0 2px;
+      animation: dot 1.2s ease-in-out infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: .2s; }
+    .typing-dots span:nth-child(3) { animation-delay: .4s; }
+    @keyframes dot { 0%,80%,100%{transform:scale(1);opacity:.4} 40%{transform:scale(1.4);opacity:1} }
+
+    /* 底部状态栏 */
+    .status-bar {
+      height: 32px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    #conn-status {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+    }
+    #conn-status.ok { color: var(--accent2); }
+    #conn-status.err { color: var(--danger); }
+
+    /* TTS 播报指示器 */
+    .tts-indicator {
+      margin-left: auto;
+      display: none;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--accent);
+    }
+    .tts-indicator.visible { display: flex; }
+    .tts-bar {
+      display: flex; gap: 2px; align-items: flex-end; height: 12px;
+    }
+    .tts-bar span {
+      width: 2px;
+      border-radius: 1px;
+      background: var(--accent);
+      animation: wave 1s ease-in-out infinite;
+    }
+    .tts-bar span:nth-child(1){height:4px;animation-delay:0s}
+    .tts-bar span:nth-child(2){height:8px;animation-delay:.15s}
+    .tts-bar span:nth-child(3){height:12px;animation-delay:.3s}
+    .tts-bar span:nth-child(4){height:8px;animation-delay:.45s}
+    .tts-bar span:nth-child(5){height:4px;animation-delay:.6s}
+    @keyframes wave { 0%,100%{transform:scaleY(.4)} 50%{transform:scaleY(1)} }
+
+    /* 欢迎占位 */
+    .empty-hint {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--muted);
+      text-align: center;
+      padding: 24px;
+    }
+    .empty-hint .hint-icon {
+      font-size: 28px;
+      opacity: .4;
+    }
+    .empty-hint p {
+      font-size: 13px;
+      line-height: 1.7;
+      max-width: 240px;
     }
   </style>
 </head>
 <body>
-  <h1>职业识别语音交互辅助系统</h1>
 
-  <div id="video-wrap">
-    <img src="/video_feed" alt="摄像头画面">
+<header>
+  <div class="logo-dot"></div>
+  <h1>Profinder</h1>
+  <span class="header-tag">职业识别语音交互辅助系统</span>
+</header>
+
+<div class="layout">
+
+  <!-- 左侧：视频 + ASR 条 -->
+  <div class="left-pane">
+    <div class="pane-header">
+      <span class="pane-title">Camera Feed</span>
+      <div class="status-pill">
+        <div class="status-dot" id="cam-dot"></div>
+        <span id="cam-label">connecting</span>
+      </div>
+    </div>
+
+    <div class="video-wrap">
+      <img src="/video_feed" alt="camera"
+           onload="document.getElementById('cam-dot').classList.add('live');document.getElementById('cam-label').textContent='live'">
+    </div>
+
+    <div class="asr-bar">
+      <div class="mic-icon" id="mic-icon">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm6.36 9.64A6 6 0 0 1 6.64 10.64M12 18v4m-4 0h8"/>
+        </svg>
+      </div>
+      <span id="asr-text">等待语音输入...</span>
+    </div>
   </div>
 
-  <!-- ASR 转写面板 -->
-  <div class="panel">
-    <div class="panel-header">
-      <div id="mic-dot"></div>
-      <span>语音转写</span>
+  <!-- 右侧：对话 -->
+  <div class="right-pane">
+    <div class="pane-header">
+      <span class="pane-title">Conversation</span>
+      <div class="status-pill">
+        <div class="status-dot" id="vad-dot"></div>
+        <span id="vad-label">waiting</span>
+      </div>
     </div>
-    <div id="asr-list">
-      <div class="asr-item latest">等待语音输入...</div>
-    </div>
-  </div>
 
-  <!-- 对话记录面板 -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>💬</span>
-      <span>对话记录</span>
-    </div>
     <div id="chat-list">
-      <div class="chat-bubble thinking">
-        <div>对话将在这里显示...</div>
+      <div class="empty-hint" id="empty-hint">
+        <div class="hint-icon">🎤</div>
+        <p>对着麦克风说话，系统会自动识别周围人员并回答你的问题</p>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <span id="conn-status">connecting...</span>
+      <div class="tts-indicator" id="tts-indicator">
+        <div class="tts-bar">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <span>播报中</span>
       </div>
     </div>
   </div>
 
-  <div id="status-bar">连接中...</div>
+</div>
 
-  <script>
-    const asrList   = document.getElementById('asr-list');
-    const chatList  = document.getElementById('chat-list');
-    const micDot    = document.getElementById('mic-dot');
-    const statusBar = document.getElementById('status-bar');
-    const MAX_ASR   = 5;
-    const MAX_CHAT  = 20;
+<script>
+  const chatList    = document.getElementById('chat-list');
+  const asrText     = document.getElementById('asr-text');
+  const micIcon     = document.getElementById('mic-icon');
+  const vadDot      = document.getElementById('vad-dot');
+  const vadLabel    = document.getElementById('vad-label');
+  const connStatus  = document.getElementById('conn-status');
+  const ttsIndicator = document.getElementById('tts-indicator');
+  const emptyHint   = document.getElementById('empty-hint');
 
-    // ── ASR 更新 ────────────────────────────────────────────────────────
-    function addAsrItem(text) {
-      // 清除占位
-      const ph = asrList.querySelector('.latest');
-      if (ph && ph.textContent === '等待语音输入...') ph.remove();
+  let thinkingBubble = null;
+  let ttsTimer = null;
 
-      asrList.querySelectorAll('.asr-item').forEach(el => el.classList.remove('latest'));
+  // ── 工具 ──────────────────────────────────────────────────────────────
+  function removeEmpty() {
+    if (emptyHint && emptyHint.parentNode) emptyHint.remove();
+  }
 
-      const el = document.createElement('div');
-      el.className = 'asr-item latest';
-      el.textContent = text;
-      asrList.appendChild(el);
+  function addBubble(role, bodyHtml, isThinking = false) {
+    removeEmpty();
 
-      const items = asrList.querySelectorAll('.asr-item');
-      if (items.length > MAX_ASR) items[0].remove();
-      asrList.scrollTop = asrList.scrollHeight;
-
-      micDot.classList.add('active');
-      setTimeout(() => micDot.classList.remove('active'), 1500);
+    // 移除旧的思考泡
+    if (role === 'ai' && thinkingBubble) {
+      thinkingBubble.remove();
+      thinkingBubble = null;
     }
 
-    // ── 对话气泡 ─────────────────────────────────────────────────────────
-    let thinkingBubble = null;
+    const wrap = document.createElement('div');
+    wrap.className = `bubble ${role}${isThinking ? ' thinking' : ''}`;
 
-    function addChatBubble(role, text) {
-      // 移除初始占位
-      const ph = chatList.querySelector('.thinking');
-      if (ph && ph.textContent.trim() === '对话将在这里显示...') ph.remove();
+    const roleTag = document.createElement('div');
+    roleTag.className = 'bubble-role';
+    roleTag.textContent = role === 'user' ? 'YOU' : 'ASSISTANT';
+    wrap.appendChild(roleTag);
 
-      // 若是助手消息，先移除"思考中"占位
-      if (role === 'assistant' && thinkingBubble) {
-        thinkingBubble.remove();
-        thinkingBubble = null;
-      }
+    const body = document.createElement('div');
+    body.className = 'bubble-body';
+    body.innerHTML = bodyHtml;
+    wrap.appendChild(body);
 
-      const bubble = document.createElement('div');
-      bubble.className = `chat-bubble ${role}`;
+    chatList.appendChild(wrap);
+    chatList.scrollTop = chatList.scrollHeight;
 
-      const tag = document.createElement('div');
-      tag.className = 'role-tag';
-      tag.textContent = role === 'user' ? '🎤 你' : '🤖 助手';
-      bubble.appendChild(tag);
+    if (isThinking) thinkingBubble = wrap;
+    return wrap;
+  }
 
-      const body = document.createElement('div');
-      body.textContent = text;
-      bubble.appendChild(body);
+  function flashMic() {
+    micIcon.classList.add('active');
+    asrText.classList.add('active');
+    setTimeout(() => {
+      micIcon.classList.remove('active');
+      asrText.classList.remove('active');
+    }, 2000);
+  }
 
-      chatList.appendChild(bubble);
+  // TTS 播报指示（收到 assistant 消息后显示 4 秒，模拟播报时长）
+  function showTTSIndicator() {
+    ttsIndicator.classList.add('visible');
+    if (ttsTimer) clearTimeout(ttsTimer);
+    ttsTimer = setTimeout(() => ttsIndicator.classList.remove('visible'), 4000);
+  }
 
-      // 用户消息后加一个"思考中"占位
-      if (role === 'user') {
-        thinkingBubble = document.createElement('div');
-        thinkingBubble.className = 'chat-bubble thinking';
-        thinkingBubble.textContent = '正在思考...';
-        chatList.appendChild(thinkingBubble);
-      }
+  // ── ASR SSE ───────────────────────────────────────────────────────────
+  function connectASR() {
+    const es = new EventSource('/asr_stream');
+    es.onopen = () => {
+      connStatus.textContent = '● connected';
+      connStatus.className = 'ok';
+      vadDot.classList.add('live');
+      vadLabel.textContent = 'listening';
+    };
+    es.onmessage = e => {
+      const text = e.data.trim();
+      if (!text) return;
+      asrText.textContent = text;
+      flashMic();
+    };
+    es.onerror = () => {
+      connStatus.textContent = '● reconnecting...';
+      connStatus.className = 'err';
+      vadDot.classList.remove('live');
+      es.close();
+      setTimeout(connectASR, 3000);
+    };
+  }
 
-      const items = chatList.querySelectorAll('.chat-bubble:not(.thinking)');
-      if (items.length > MAX_CHAT) items[0].remove();
-      chatList.scrollTop = chatList.scrollHeight;
-    }
-
-    // ── SSE 连接 ─────────────────────────────────────────────────────────
-    function connectSSE(url, onMessage, onOpen) {
-      const es = new EventSource(url);
-      es.onopen = onOpen || (() => {});
-      es.onmessage = e => onMessage(e.data.trim());
-      es.onerror = () => {
-        es.close();
-        setTimeout(() => connectSSE(url, onMessage, onOpen), 3000);
-      };
-    }
-
-    // ASR 流
-    connectSSE('/asr_stream',
-      text => { if (text) addAsrItem(text); },
-      () => { statusBar.textContent = '● 已连接'; statusBar.style.color = '#2ecc71'; }
-    );
-
-    // 对话流
-    connectSSE('/chat_stream', raw => {
+  // ── Chat SSE ──────────────────────────────────────────────────────────
+  function connectChat() {
+    const es = new EventSource('/chat_stream');
+    es.onmessage = e => {
+      const raw = e.data.trim();
       if (!raw) return;
       try {
         const { role, text } = JSON.parse(raw);
-        addChatBubble(role, text);
-      } catch(e) {}
-    });
-  </script>
+        if (role === 'user') {
+          addBubble('user', escHtml(text));
+          // 加思考泡
+          addBubble('ai',
+            '<div class="typing-dots"><span></span><span></span><span></span></div>',
+            true);
+        } else if (role === 'assistant') {
+          addBubble('ai', escHtml(text));
+          showTTSIndicator();
+        }
+      } catch(_) {}
+    };
+    es.onerror = () => { es.close(); setTimeout(connectChat, 3000); };
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  connectASR();
+  connectChat();
+</script>
 </body>
 </html>

@@ -55,9 +55,16 @@ if __name__ == "__main__":
     )
 
     # 间隔1秒，避免摄像头占用冲突
-    time.sleep(1)
+    time.sleep(0.5)
 
     capture_photo(
         camera_id=1,
         save_path=os.path.join(save_dir, "camera_1_photo.jpg")
+    )
+
+    time.sleep(0.5)
+
+    capture_photo(
+        camera_id=2,
+        save_path=os.path.join(save_dir, "camera_2_photo.jpg")
     )

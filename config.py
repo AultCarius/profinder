@@ -20,7 +20,7 @@ ASR_TIMEOUT = 15  # 单次 ASR 请求超时秒数
 LLM_MODE = "vision_only"
 
 # 摄像头编号（通常是 0）
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 FRAME_WIDTH = 1024
 FRAME_HEIGHT = 768
 

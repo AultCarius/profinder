@@ -1,0 +1,24 @@
+# Python 虚拟环境
+venv/
+env/
+*.env
+Anconda/envs/
+
+# 缓存/日志
+__pycache__/
+*.py[cod]
+*.so
+*.log
+*.tmp
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 大文件（比如视频/模型，按需添加）
+*.mp4
+*.avi
+*.pt
+*.pth

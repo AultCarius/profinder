@@ -1,43 +1,82 @@
+"""
+ui/app.py
+
+Flask 路由：
+  /              — 页面
+  /video_feed    — MJPEG 视频流
+  /asr_stream    — SSE：ASR 转写结果推送
+  /chat_stream   — SSE：对话记录推送（问题 + 回答）
+"""
+
+import json
 import queue
+import threading
+
 import cv2
 import numpy as np
 from PIL import ImageFont, ImageDraw, Image
 from flask import Flask, Response, render_template
+
 from modules.camera import CameraStream
-from modules.vision import get_state_table, start_recognition_thread
+from modules.vision import detect_persons, get_state_table, start_recognition_thread, match_box_to_state
 from modules.asr import set_asr_callback
+from modules.llm import answer_question
 import config
 
 app = Flask(__name__)
+
 camera = CameraStream(
     index=config.CAMERA_INDEX,
     width=config.FRAME_WIDTH,
     height=config.FRAME_HEIGHT,
 )
-
-# 启动后台识别线程
 start_recognition_thread(camera)
 
 FONT = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", 24)
 
-# ── ASR 结果队列（SSE 消费）────────────────────────────────────────────────
-# 每个 SSE 客户端独占一个队列；用全局列表管理所有已连接客户端
-_asr_clients: list[queue.Queue] = []
-_asr_clients_lock = __import__('threading').Lock()
+
+# ── ASR 结果广播 ──────────────────────────────────────────────────────────────
+_asr_clients: list = []
+_asr_lock = threading.Lock()
+
+# ── 对话记录广播 ──────────────────────────────────────────────────────────────
+_chat_clients: list = []
+_chat_lock = threading.Lock()
 
 
-def _asr_result_handler(text: str):
-    """ASR 回调：把转写文本广播给所有 SSE 客户端。"""
-    with _asr_clients_lock:
-        for q in _asr_clients:
-            q.put(text)
+def _broadcast(client_list, lock, payload: str):
+    with lock:
+        for q in client_list:
+            q.put(payload)
 
 
-# 在 asr 模块注册回调
-set_asr_callback(_asr_result_handler)
+# ── ASR 回调：转写完 → 广播 ASR → 触发 LLM → 广播对话 ────────────────────────
+def _on_asr_result(text: str):
+    if not text:
+        return
+
+    # 推送 ASR 转写
+    _broadcast(_asr_clients, _asr_lock, text)
+
+    # 广播用户问题到对话记录
+    _broadcast(_chat_clients, _chat_lock,
+               json.dumps({"role": "user", "text": text}, ensure_ascii=False))
+
+    # 异步 LLM（不阻塞 VAD 线程）
+    def _llm_task():
+        state = get_state_table()
+        frame = camera.get_frame()
+        reply = answer_question(text, state, frame)
+        _broadcast(_chat_clients, _chat_lock,
+                   json.dumps({"role": "assistant", "text": reply}, ensure_ascii=False))
+
+    threading.Thread(target=_llm_task, daemon=True).start()
 
 
-# ── 视频帧渲染 ──────────────────────────────────────────────────────────────
+set_asr_callback(_on_asr_result)
+
+
+# ── 视频帧渲染 ────────────────────────────────────────────────────────────────
 def draw_chinese(frame, text, x, y, bg_color=(0, 255, 0), text_color=(0, 0, 0)):
     img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     draw    = ImageDraw.Draw(img_pil)
@@ -55,14 +94,14 @@ def generate_frames():
         if frame is None:
             continue
 
-        # 只读状态表，不在此处跑 YOLO（YOLO 在后台识别线程里跑）
+        boxes = detect_persons(frame)
         state = get_state_table()
 
-        for entry in state:
-            x1, y1, x2, y2 = entry["bbox"]
+        for (x1, y1, x2, y2) in boxes:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"{entry['position']} · {entry['occupation']}"
-            frame = draw_chinese(frame, label, x1, y1)
+            matched = match_box_to_state((x1, y1, x2, y2), state)
+            label   = f"{matched['position']} · {matched['occupation']}" if matched else "识别中..."
+            frame   = draw_chinese(frame, label, x1, y1)
 
         ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ret:
@@ -76,22 +115,23 @@ def generate_frames():
         )
 
 
-# ── SSE：ASR 转写结果推送 ────────────────────────────────────────────────────
-def _sse_stream(client_queue: queue.Queue):
-    """生成 SSE 事件流，阻塞等待 ASR 结果，逐条推送。"""
+# ── SSE 工具 ──────────────────────────────────────────────────────────────────
+def _sse_gen(client_list, lock):
+    q = queue.Queue()
+    with lock:
+        client_list.append(q)
     try:
         while True:
-            text = client_queue.get()          # 阻塞直到有新结果
-            # SSE 格式：data: ...\n\n
-            yield f"data: {text}\n\n"
+            yield f"data: {q.get()}\n\n"
     except GeneratorExit:
         pass
     finally:
-        with _asr_clients_lock:
-            _asr_clients.remove(client_queue)
+        with lock:
+            if q in client_list:
+                client_list.remove(q)
 
 
-# ── Flask 路由 ───────────────────────────────────────────────────────────────
+# ── Flask 路由 ────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -107,15 +147,17 @@ def video_feed():
 
 @app.route('/asr_stream')
 def asr_stream():
-    """SSE 接口：客户端连接后，每次 ASR 完成即推送转写文本。"""
-    q = queue.Queue()
-    with _asr_clients_lock:
-        _asr_clients.append(q)
     return Response(
-        _sse_stream(q),
+        _sse_gen(_asr_clients, _asr_lock),
         mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no',   # 兼容 Nginx 反代时关闭缓冲
-        },
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
+@app.route('/chat_stream')
+def chat_stream():
+    return Response(
+        _sse_gen(_chat_clients, _chat_lock),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
     )

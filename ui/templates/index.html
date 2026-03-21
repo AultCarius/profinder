@@ -13,8 +13,8 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 24px;
-      gap: 16px;
+      padding: 20px;
+      gap: 14px;
     }
 
     h1 { font-size: 20px; font-weight: 500; letter-spacing: 2px; }
@@ -29,75 +29,97 @@
     }
     #video-wrap img { width: 100%; display: block; }
 
-    /* ASR 转写区 */
-    #asr-panel {
+    /* 通用面板 */
+    .panel {
       width: 100%;
       max-width: 900px;
       background: #242424;
       border-radius: 8px;
-      padding: 14px 18px;
+      padding: 12px 16px;
+    }
+    .panel-header {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 8px;
       display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      min-height: 56px;
+      align-items: center;
+      gap: 8px;
     }
 
-    #asr-label {
-      flex-shrink: 0;
-      font-size: 13px;
-      color: #888;
-      padding-top: 2px;
-      white-space: nowrap;
-    }
-
-    /* 麦克风图标（VAD 激活时闪烁）*/
-    #mic-icon {
-      flex-shrink: 0;
-      width: 18px;
-      height: 18px;
+    /* ASR 面板 */
+    #mic-dot {
+      width: 8px; height: 8px;
       border-radius: 50%;
       background: #444;
-      margin-top: 3px;
-      transition: background 0.2s;
+      flex-shrink: 0;
+      transition: background .2s;
     }
-    #mic-icon.active { background: #e74c3c; animation: pulse 0.8s infinite; }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.4; }
-    }
+    #mic-dot.active { background: #e74c3c; animation: pulse .8s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-    /* 转写文字列表 */
     #asr-list {
-      flex: 1;
+      font-size: 15px;
+      line-height: 1.6;
+      max-height: 80px;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      font-size: 16px;
-      line-height: 1.5;
+      gap: 4px;
+    }
+    .asr-item { color: #ccc; }
+    .asr-item.latest { color: #7ecfff; }
+
+    /* 对话面板 */
+    #chat-list {
+      max-height: 220px;
       overflow-y: auto;
-      max-height: 160px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
-    .asr-item {
-      padding: 4px 8px;
-      background: #2e2e2e;
-      border-radius: 4px;
-      animation: fadein 0.3s ease;
+    .chat-bubble {
+      max-width: 80%;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 15px;
+      line-height: 1.5;
+      animation: fadein .3s ease;
     }
-    .asr-item.latest {
+    @keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+
+    /* 用户气泡：右对齐，蓝色 */
+    .chat-bubble.user {
+      align-self: flex-end;
       background: #1a3a5c;
-      color: #7ecfff;
+      color: #a8d8ff;
     }
-    @keyframes fadein {
-      from { opacity: 0; transform: translateY(4px); }
-      to   { opacity: 1; transform: translateY(0); }
+    /* 助手气泡：左对齐，深绿 */
+    .chat-bubble.assistant {
+      align-self: flex-start;
+      background: #1a3a28;
+      color: #a8e0c0;
+    }
+    /* 思考中占位 */
+    .chat-bubble.thinking {
+      align-self: flex-start;
+      background: #2a2a2a;
+      color: #666;
+      font-style: italic;
+    }
+    .chat-bubble .role-tag {
+      font-size: 11px;
+      margin-bottom: 3px;
+      opacity: .6;
     }
 
     /* 状态栏 */
     #status-bar {
       font-size: 12px;
-      color: #555;
+      color: #444;
       align-self: flex-start;
+      max-width: 900px;
+      width: 100%;
     }
   </style>
 </head>
@@ -109,77 +131,126 @@
   </div>
 
   <!-- ASR 转写面板 -->
-  <div id="asr-panel">
-    <div id="mic-icon" title="VAD 状态"></div>
-    <span id="asr-label">语音转写</span>
+  <div class="panel">
+    <div class="panel-header">
+      <div id="mic-dot"></div>
+      <span>语音转写</span>
+    </div>
     <div id="asr-list">
-      <div class="asr-item latest" id="asr-placeholder">等待语音输入...</div>
+      <div class="asr-item latest">等待语音输入...</div>
     </div>
   </div>
 
-  <div id="status-bar">SSE 连接中...</div>
+  <!-- 对话记录面板 -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>💬</span>
+      <span>对话记录</span>
+    </div>
+    <div id="chat-list">
+      <div class="chat-bubble thinking">
+        <div>对话将在这里显示...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-bar">连接中...</div>
 
   <script>
-    const asrList       = document.getElementById('asr-list');
-    const micIcon       = document.getElementById('mic-icon');
-    const statusBar     = document.getElementById('status-bar');
-    const placeholder   = document.getElementById('asr-placeholder');
-    const MAX_HISTORY   = 6;   // 最多保留最近 6 条转写记录
+    const asrList   = document.getElementById('asr-list');
+    const chatList  = document.getElementById('chat-list');
+    const micDot    = document.getElementById('mic-dot');
+    const statusBar = document.getElementById('status-bar');
+    const MAX_ASR   = 5;
+    const MAX_CHAT  = 20;
 
+    // ── ASR 更新 ────────────────────────────────────────────────────────
     function addAsrItem(text) {
-      // 移除占位符
-      if (placeholder && placeholder.parentNode) {
-        placeholder.parentNode.removeChild(placeholder);
-      }
+      // 清除占位
+      const ph = asrList.querySelector('.latest');
+      if (ph && ph.textContent === '等待语音输入...') ph.remove();
 
-      // 把旧的 latest 样式去掉
-      document.querySelectorAll('.asr-item.latest').forEach(el => {
-        el.classList.remove('latest');
-      });
+      asrList.querySelectorAll('.asr-item').forEach(el => el.classList.remove('latest'));
 
-      // 新建条目
-      const item = document.createElement('div');
-      item.className = 'asr-item latest';
-      item.textContent = text;
-      asrList.appendChild(item);
+      const el = document.createElement('div');
+      el.className = 'asr-item latest';
+      el.textContent = text;
+      asrList.appendChild(el);
 
-      // 超出上限时删除最旧的
       const items = asrList.querySelectorAll('.asr-item');
-      if (items.length > MAX_HISTORY) {
-        asrList.removeChild(items[0]);
+      if (items.length > MAX_ASR) items[0].remove();
+      asrList.scrollTop = asrList.scrollHeight;
+
+      micDot.classList.add('active');
+      setTimeout(() => micDot.classList.remove('active'), 1500);
+    }
+
+    // ── 对话气泡 ─────────────────────────────────────────────────────────
+    let thinkingBubble = null;
+
+    function addChatBubble(role, text) {
+      // 移除初始占位
+      const ph = chatList.querySelector('.thinking');
+      if (ph && ph.textContent.trim() === '对话将在这里显示...') ph.remove();
+
+      // 若是助手消息，先移除"思考中"占位
+      if (role === 'assistant' && thinkingBubble) {
+        thinkingBubble.remove();
+        thinkingBubble = null;
       }
 
-      // 自动滚动到最新
-      asrList.scrollTop = asrList.scrollHeight;
+      const bubble = document.createElement('div');
+      bubble.className = `chat-bubble ${role}`;
+
+      const tag = document.createElement('div');
+      tag.className = 'role-tag';
+      tag.textContent = role === 'user' ? '🎤 你' : '🤖 助手';
+      bubble.appendChild(tag);
+
+      const body = document.createElement('div');
+      body.textContent = text;
+      bubble.appendChild(body);
+
+      chatList.appendChild(bubble);
+
+      // 用户消息后加一个"思考中"占位
+      if (role === 'user') {
+        thinkingBubble = document.createElement('div');
+        thinkingBubble.className = 'chat-bubble thinking';
+        thinkingBubble.textContent = '正在思考...';
+        chatList.appendChild(thinkingBubble);
+      }
+
+      const items = chatList.querySelectorAll('.chat-bubble:not(.thinking)');
+      if (items.length > MAX_CHAT) items[0].remove();
+      chatList.scrollTop = chatList.scrollHeight;
     }
 
-    // ── 建立 SSE 连接 ─────────────────────────────────────────────────
-    function connectSSE() {
-      const es = new EventSource('/asr_stream');
-
-      es.onopen = () => {
-        statusBar.textContent = '● 已连接，等待语音...';
-        statusBar.style.color = '#2ecc71';
-      };
-
-      es.onmessage = (e) => {
-        const text = e.data.trim();
-        if (!text) return;
-        addAsrItem(text);
-        // 麦克风图标短暂点亮表示刚完成一次识别
-        micIcon.classList.add('active');
-        setTimeout(() => micIcon.classList.remove('active'), 1500);
-      };
-
+    // ── SSE 连接 ─────────────────────────────────────────────────────────
+    function connectSSE(url, onMessage, onOpen) {
+      const es = new EventSource(url);
+      es.onopen = onOpen || (() => {});
+      es.onmessage = e => onMessage(e.data.trim());
       es.onerror = () => {
-        statusBar.textContent = '● SSE 断开，3 秒后重连...';
-        statusBar.style.color = '#e74c3c';
         es.close();
-        setTimeout(connectSSE, 3000);
+        setTimeout(() => connectSSE(url, onMessage, onOpen), 3000);
       };
     }
 
-    connectSSE();
+    // ASR 流
+    connectSSE('/asr_stream',
+      text => { if (text) addAsrItem(text); },
+      () => { statusBar.textContent = '● 已连接'; statusBar.style.color = '#2ecc71'; }
+    );
+
+    // 对话流
+    connectSSE('/chat_stream', raw => {
+      if (!raw) return;
+      try {
+        const { role, text } = JSON.parse(raw);
+        addChatBubble(role, text);
+      } catch(e) {}
+    });
   </script>
 </body>
 </html>

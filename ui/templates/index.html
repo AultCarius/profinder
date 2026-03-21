@@ -5,17 +5,21 @@
   <title>职业识别辅助系统</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
       background: #1a1a1a;
       color: #f0f0f0;
-      font-family: sans-serif;
+      font-family: "Microsoft YaHei", sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
       padding: 24px;
       gap: 16px;
     }
-    h1 { font-size: 20px; font-weight: 500; }
+
+    h1 { font-size: 20px; font-weight: 500; letter-spacing: 2px; }
+
+    /* 摄像头画面 */
     #video-wrap {
       width: 100%;
       max-width: 900px;
@@ -23,16 +27,159 @@
       overflow: hidden;
       background: #000;
     }
-    #video-wrap img {
+    #video-wrap img { width: 100%; display: block; }
+
+    /* ASR 转写区 */
+    #asr-panel {
       width: 100%;
-      display: block;
+      max-width: 900px;
+      background: #242424;
+      border-radius: 8px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      min-height: 56px;
+    }
+
+    #asr-label {
+      flex-shrink: 0;
+      font-size: 13px;
+      color: #888;
+      padding-top: 2px;
+      white-space: nowrap;
+    }
+
+    /* 麦克风图标（VAD 激活时闪烁）*/
+    #mic-icon {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #444;
+      margin-top: 3px;
+      transition: background 0.2s;
+    }
+    #mic-icon.active { background: #e74c3c; animation: pulse 0.8s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* 转写文字列表 */
+    #asr-list {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 16px;
+      line-height: 1.5;
+      overflow-y: auto;
+      max-height: 160px;
+    }
+
+    .asr-item {
+      padding: 4px 8px;
+      background: #2e2e2e;
+      border-radius: 4px;
+      animation: fadein 0.3s ease;
+    }
+    .asr-item.latest {
+      background: #1a3a5c;
+      color: #7ecfff;
+    }
+    @keyframes fadein {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 状态栏 */
+    #status-bar {
+      font-size: 12px;
+      color: #555;
+      align-self: flex-start;
     }
   </style>
 </head>
 <body>
   <h1>职业识别语音交互辅助系统</h1>
+
   <div id="video-wrap">
     <img src="/video_feed" alt="摄像头画面">
   </div>
+
+  <!-- ASR 转写面板 -->
+  <div id="asr-panel">
+    <div id="mic-icon" title="VAD 状态"></div>
+    <span id="asr-label">语音转写</span>
+    <div id="asr-list">
+      <div class="asr-item latest" id="asr-placeholder">等待语音输入...</div>
+    </div>
+  </div>
+
+  <div id="status-bar">SSE 连接中...</div>
+
+  <script>
+    const asrList       = document.getElementById('asr-list');
+    const micIcon       = document.getElementById('mic-icon');
+    const statusBar     = document.getElementById('status-bar');
+    const placeholder   = document.getElementById('asr-placeholder');
+    const MAX_HISTORY   = 6;   // 最多保留最近 6 条转写记录
+
+    function addAsrItem(text) {
+      // 移除占位符
+      if (placeholder && placeholder.parentNode) {
+        placeholder.parentNode.removeChild(placeholder);
+      }
+
+      // 把旧的 latest 样式去掉
+      document.querySelectorAll('.asr-item.latest').forEach(el => {
+        el.classList.remove('latest');
+      });
+
+      // 新建条目
+      const item = document.createElement('div');
+      item.className = 'asr-item latest';
+      item.textContent = text;
+      asrList.appendChild(item);
+
+      // 超出上限时删除最旧的
+      const items = asrList.querySelectorAll('.asr-item');
+      if (items.length > MAX_HISTORY) {
+        asrList.removeChild(items[0]);
+      }
+
+      // 自动滚动到最新
+      asrList.scrollTop = asrList.scrollHeight;
+    }
+
+    // ── 建立 SSE 连接 ─────────────────────────────────────────────────
+    function connectSSE() {
+      const es = new EventSource('/asr_stream');
+
+      es.onopen = () => {
+        statusBar.textContent = '● 已连接，等待语音...';
+        statusBar.style.color = '#2ecc71';
+      };
+
+      es.onmessage = (e) => {
+        const text = e.data.trim();
+        if (!text) return;
+        addAsrItem(text);
+        // 麦克风图标短暂点亮表示刚完成一次识别
+        micIcon.classList.add('active');
+        setTimeout(() => micIcon.classList.remove('active'), 1500);
+      };
+
+      es.onerror = () => {
+        statusBar.textContent = '● SSE 断开，3 秒后重连...';
+        statusBar.style.color = '#e74c3c';
+        es.close();
+        setTimeout(connectSSE, 3000);
+      };
+    }
+
+    connectSSE();
+  </script>
 </body>
 </html>

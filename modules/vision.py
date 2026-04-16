@@ -1,12 +1,13 @@
 """
-modules/vision.py  — 重构版
+modules/vision.py  — Phase 5 版本
 
-核心改动：
-1. 状态表改为"逐人更新"：每识别完一个人立即写入，不等全部完成
-2. 状态表加 `stale` 标记：超过 N 秒未更新的条目显示为"识别中..."
-3. 识别线程改为"滚动调度"：每次只识别变化最大 / 最旧的那几个人
-4. 并行 future 超时后不阻塞其他人的更新
-5. 新增 request_immediate_recognition()，供用户提问时主动触发一轮加速识别
+新增改动（Phase 5 主动播报）：
+1. _announce_cooldown 字典：记录每个职业标签上次播报时间，实现防抖
+2. _check_and_announce()：对比新旧状态表，发现新职业人员时触发 TTS
+3. _recognition_loop 末尾调用 _check_and_announce()
+4. 对外暴露 set_auto_announce(enabled) 供前端运行时切换开关
+
+其余逻辑不变。
 """
 
 import base64
@@ -28,18 +29,14 @@ client = OpenAI(
 _llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
 
 # ── 识别状态表 ──────────────────────────────────────────────────────────────
-# 每条结构：
-#   id, position, occupation, bbox, updated_at, pending(bool)
-# pending=True 表示"正在识别中"，前端显示"识别中..."
 _state_table: list = []
 _state_lock = threading.Lock()
 
-# 控制信号：外部请求立即触发一轮识别（用户提问时调用）
+# 控制信号：外部请求立即触发一轮识别
 _immediate_flag = threading.Event()
 
 
 def get_state_table():
-    """返回当前状态表的快照（过滤掉 pending 的内部字段）"""
     with _state_lock:
         return [
             {k: v for k, v in e.items() if k != "pending"}
@@ -48,15 +45,10 @@ def get_state_table():
 
 
 def request_immediate_recognition():
-    """
-    外部调用：请求立即触发一轮识别（不等 interval 计时）。
-    用户开口提问时调用，让状态表尽快刷新。
-    """
     _immediate_flag.set()
 
 
 def _update_one(entry_id: int, occupation: str):
-    """识别完成后立即更新单条记录（不阻塞其他人）"""
     with _state_lock:
         for e in _state_table:
             if e["id"] == entry_id:
@@ -67,7 +59,6 @@ def _update_one(entry_id: int, occupation: str):
 
 
 def _replace_state(new_entries: list):
-    """全量替换状态表（每轮开始时调用，先占位再逐步填充）"""
     with _state_lock:
         global _state_table
         _state_table = new_entries
@@ -140,11 +131,6 @@ def match_box_to_state(box, state_table, iou_threshold=0.3):
 
 
 def is_entry_stale(entry) -> bool:
-    """
-    判断某条记录是否需要重新识别。
-    - 有效标签（非路人/未知）：超过 config.LABEL_REUSE_MAX_AGE 秒才重识
-    - "路人" / "未知"：超过 config.UNCERTAIN_RECHECK_AGE 秒就重识（更积极）
-    """
     age = time.time() - entry.get("updated_at", 0)
     occ = entry.get("occupation", "")
     if occ in ("路人", "未知", "识别超时"):
@@ -185,7 +171,7 @@ def recognize_occupation(person_img):
         return future.result(timeout=config.LLM_TIMEOUT)
     except concurrent.futures.TimeoutError:
         print(f"  [LLM] 识别超时（>{config.LLM_TIMEOUT}s），跳过")
-        return None   # 返回 None 而非字符串，让调用方决定如何处理
+        return None
     except Exception as e:
         print(f"  [LLM] 调用失败: {e}")
         return None
@@ -193,10 +179,6 @@ def recognize_occupation(person_img):
 
 # ── 核心：逐人异步识别 ──────────────────────────────────────────────────────
 def _recognize_all_async(frame, boxes, entry_ids):
-    """
-    为每个 bbox 异步提交识别任务，识别完成后立即更新对应条目。
-    不等所有人都完成，任何一人识别完成立即写入状态表。
-    """
     frame_width = frame.shape[1]
 
     def _task(entry_id, box):
@@ -204,11 +186,9 @@ def _recognize_all_async(frame, boxes, entry_ids):
         occupation = recognize_occupation(crop)
 
         if occupation is None:
-            # 超时：保留旧职业标签（不覆盖），只更新 bbox 和 position
             with _state_lock:
                 for e in _state_table:
                     if e["id"] == entry_id:
-                        # 如果旧值是"识别中..."（占位），改为"未知"
                         if e["occupation"] in ("识别中...", ""):
                             e["occupation"] = "未知"
                         e["pending"] = False
@@ -227,18 +207,128 @@ def _recognize_all_async(frame, boxes, entry_ids):
     return futures
 
 
+# ── Phase 5：主动播报 ────────────────────────────────────────────────────────
+
+# 运行时开关，可通过 set_auto_announce() 动态切换
+_auto_announce_enabled: bool = getattr(config, "AUTO_ANNOUNCE", True)
+_announce_lock = threading.Lock()
+
+# 防抖字典：occupation_key → 上次播报时间戳
+# key 格式："{position}_{occupation}"，按位置+职业去重，避免同一位置同一职业反复播报
+_announce_cooldown: dict = {}
+
+
+# 主动播报的外部回调（用于 SSE 推送到前端）
+# 签名：callback(text: str) → None
+_on_announce_callback = None
+
+
+def set_announce_callback(callback):
+    """注册主动播报回调，每次播报触发时调用 callback(text)。"""
+    global _on_announce_callback
+    _on_announce_callback = callback
+
+
+def set_auto_announce(enabled: bool):
+    """运行时切换主动播报开关（供前端 API 调用）。"""
+    global _auto_announce_enabled
+    with _announce_lock:
+        _auto_announce_enabled = enabled
+    print(f"[主动播报] {'启用' if enabled else '停用'}")
+
+
+def _is_valid_occupation(occ: str) -> bool:
+    """判断职业标签是否值得播报（过滤无效标签）。"""
+    skip = getattr(config, "ANNOUNCE_SKIP_OCCUPATIONS",
+                   {"路人", "未知", "识别中...", "识别超时", ""})
+    return occ not in skip
+
+
+def _build_announce_key(entry: dict) -> str:
+    """用位置+职业作为防抖 key，同位置同职业 30s 内不重播。"""
+    return f"{entry.get('position', '')}_{entry.get('occupation', '')}"
+
+
+def _check_and_announce(prev_state: list, new_state: list):
+    """
+    对比前后两轮状态表，发现新出现的有效职业人员时触发 TTS 主动播报。
+
+    判断"新人"的规则：
+      - new_state 里的某个条目，在 prev_state 里找不到 IoU > 0.3 的匹配
+      - 该条目的职业标签是有效的（非路人/未知/识别中）
+      - 该 (position, occupation) 组合在 ANNOUNCE_COOLDOWN 秒内未播报过
+    """
+    with _announce_lock:
+        enabled = _auto_announce_enabled
+    if not enabled:
+        return
+
+    # 延迟导入，避免循环依赖（tts → asr → vision 可能形成环）
+    from modules.tts import speak
+
+    cooldown = getattr(config, "ANNOUNCE_COOLDOWN", 30.0)
+    now = time.time()
+    new_persons_to_announce = []
+
+    for entry in new_state:
+        occ = entry.get("occupation", "")
+        if not _is_valid_occupation(occ):
+            continue
+
+        # 在旧状态里查找 IoU 匹配
+        matched_in_prev = match_box_to_state(entry["bbox"], prev_state)
+        if matched_in_prev:
+            # 旧状态里有这个人 → 不是新人，跳过
+            continue
+
+        # 是新人，检查防抖
+        key = _build_announce_key(entry)
+        last_time = _announce_cooldown.get(key, 0)
+        if now - last_time < cooldown:
+            print(f"[主动播报] {key} 冷却中，跳过（距上次 {now - last_time:.0f}s）")
+            continue
+
+        # 通过所有检查，加入待播报列表
+        new_persons_to_announce.append(entry)
+        _announce_cooldown[key] = now
+
+    if not new_persons_to_announce:
+        return
+
+    # 构建播报文本
+    # 多人同时出现：合并成一句话；单人：直接说
+    if len(new_persons_to_announce) == 1:
+        e = new_persons_to_announce[0]
+        text = f"您{e['position']}出现了一位{e['occupation']}"
+    else:
+        parts = []
+        for e in new_persons_to_announce:
+            parts.append(f"{e['position']}一位{e['occupation']}")
+        text = "您附近出现了" + "，".join(parts)
+
+    print(f"[主动播报] 触发：{text}")
+    speak(text)
+    if _on_announce_callback:
+        _on_announce_callback(text)
+
+
 # ── 后台识别线程 ────────────────────────────────────────────────────────────
 def _recognition_loop(camera, interval):
     """
-    改进版识别循环：
-    - 每轮先用 YOLO 检测出所有人，立即用占位符更新状态表（屏幕立刻有框）
-    - 再异步为每人提交 LLM 识别，识别完一个更新一个
-    - 已有职业标签且不过旧的人可以跳过，节省 API 调用
+    识别循环（Phase 5 bugfix）：
+
+    关键修正：
+      prev_state 必须保存「上一轮循环结束时」的状态，
+      而不是「本轮开始时」的状态——两者在同一帧内取值完全相同，
+      导致新人永远在 prev_state 中能找到匹配，主动播报永不触发。
+
+    正确做法：在循环顶部用 prev_state 保存上一轮留下的结果，
+    在循环底部更新 prev_state 供下一轮使用。
     """
-    pending_futures = []   # 上一轮尚未完成的 future，用于追踪
+    # 上一轮识别完成后的状态，初始为空（程序刚启动时画面里没有已知人员）
+    prev_state: list = []
 
     while True:
-        # 等待下一次触发（定时 or 即时请求）
         triggered = _immediate_flag.wait(timeout=interval)
         if triggered:
             _immediate_flag.clear()
@@ -253,12 +343,13 @@ def _recognition_loop(camera, interval):
 
         if not boxes:
             _replace_state([])
+            prev_state = []   # 画面清空，重置快照
             continue
 
-        # ── 与旧状态表做 IoU 匹配，复用旧职业标签 ─────────────────────────
+        # old_state：用于标签复用（判断是否需要重新识别），取当前状态表
         old_state = get_state_table()
         new_entries = []
-        boxes_to_recognize = []   # 需要重新识别的 box
+        boxes_to_recognize = []
         ids_to_recognize = []
 
         for i, box in enumerate(boxes):
@@ -267,7 +358,6 @@ def _recognition_loop(camera, interval):
             matched = match_box_to_state(box, old_state)
 
             if matched and not is_entry_stale(matched) and matched["occupation"] not in ("未知", "识别中...", ""):
-                # 复用旧标签，不重新识别
                 new_entries.append({
                     "id":         entry_id,
                     "position":   position,
@@ -277,9 +367,7 @@ def _recognition_loop(camera, interval):
                     "pending":    False,
                 })
             else:
-                # 需要重新识别：先用占位符占位
                 old_occ = matched["occupation"] if matched else ""
-                # 保留旧标签（如果有）避免闪烁；新人用"识别中..."
                 placeholder = old_occ if (old_occ and old_occ not in ("未知", "识别中...")) else "识别中..."
                 new_entries.append({
                     "id":         entry_id,
@@ -292,16 +380,35 @@ def _recognition_loop(camera, interval):
                 boxes_to_recognize.append(box)
                 ids_to_recognize.append(entry_id)
 
-        # 立即更新状态表（屏幕马上显示新的框和已知的职业标签）
         _replace_state(new_entries)
 
         if boxes_to_recognize:
             print(f"[识别线程] 共 {len(boxes)} 人，"
                   f"其中 {len(boxes_to_recognize)} 人需要重新识别")
-            # 异步识别，不阻塞循环
-            _recognize_all_async(frame, boxes_to_recognize, ids_to_recognize)
+            futures = _recognize_all_async(frame, boxes_to_recognize, ids_to_recognize)
+
+            # 等待本轮所有识别完成，确保播报的是最终标签而非"识别中..."
+            # 超时保护：最多等 LLM_TIMEOUT + 1 秒
+            wait_deadline = time.time() + config.LLM_TIMEOUT + 1.0
+            for f in futures:
+                remaining = wait_deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    f.result(timeout=max(0.1, remaining))
+                except Exception:
+                    pass
         else:
             print(f"[识别线程] 共 {len(boxes)} 人，全部复用旧标签")
+
+        # ── Phase 5：主动播报差异检查 ────────────────────────────────────────
+        # final_state 是本轮识别全部落定后的结果
+        # prev_state  是上一轮循环留下的结果（真正的"上一帧"快照）
+        final_state = get_state_table()
+        _check_and_announce(prev_state, final_state)
+
+        # 本轮结束，将 final_state 保存为下一轮的 prev_state
+        prev_state = final_state
 
 
 def start_recognition_thread(camera):
